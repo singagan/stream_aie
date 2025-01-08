@@ -1,5 +1,6 @@
-zigzag_repo
-zigzag
+*.out
+typings
+outputs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -136,8 +137,8 @@ dmypy.json
 .vscode/
 
 # result pickle files
-output*/*.pkl
-output*/*.pickle
+*.pkl
+*.pickle
 
 # result json files
 outputs*/*.json
@@ -153,3 +154,6 @@ docs/make.bat
 
 # html files
 *.html
+
+# json files (for perfetto)
+*.json
