@@ -167,7 +167,7 @@ def optimize_allocation_co(
             tiled_workload_post_co_path=tiled_workload_post_co_path,
             cost_lut_post_co_path=cost_lut_post_co_path,
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
-            latency_attr="ideal_temporal_cycles"
+            latency_attr="ideal_temporal_cycles",
         )
         # Launch the MainStage
         answers = mainstage.run()
