@@ -40,7 +40,7 @@ class AcceleratorFactory:
             offchip_core_id = None
             offchip_core = None
         else:
-            offchip_core_id = max(self.data["cores"]) + 1
+            offchip_core_id = self.data.get("offchip_core_id", max(self.data["cores"]) + 1)
             offchip_core = self.create_core(self.data["offchip_core"], offchip_core_id)
 
         cores_graph = self.create_core_graph(cores, offchip_core)
@@ -59,7 +59,6 @@ class AcceleratorFactory:
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
         # Typecast
         core = Core.from_zigzag_core(core)
-        core.utilization = core_data.get("utilization", 100)
         core.type = core_data.get("type", "compute")
         return core
 
@@ -76,7 +75,7 @@ class AcceleratorFactory:
         # Mem sharing group id is the first core id of the sharing list
         return pair_this_core[0]
 
-    def have_non_identical_shared_memory(self, cores: list[Core]):
+    def have_non_identical_shared_memory(self, cores: dict[int, Core]):
         """Given the list of cores (where the index of the list equals the core id) and the user-specified shared
         memory connections, check wether all cores that are supposed to share memory have identical top level memories
         """
@@ -106,8 +105,7 @@ class AcceleratorFactory:
                 return True
         return False
 
-    def create_core_graph(self, cores: list[Core], offchip_core: Core | None):
-        assert all(core.id == i for i, core in enumerate(cores))
+    def create_core_graph(self, cores: dict[int, Core], offchip_core: Core | None):
         bandwidth = self.data["bandwidth"]
         unit_energy_cost = self.data["unit_energy_cost"]
         connections: list[tuple[int, ...]] = self.data["core_connectivity"]
@@ -150,7 +148,7 @@ class AcceleratorFactory:
             edges += self.get_edges_to_offchip_core(cores, offchip_core)
         return CoreGraph(edges)
 
-    def get_edges_to_offchip_core(self, cores: list[Core], offchip_core: Core):
+    def get_edges_to_offchip_core(self, cores: dict[int, Core], offchip_core: Core):
         edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
 
         unit_energy_cost = self.data["unit_energy_cost"]
@@ -175,7 +173,7 @@ class AcceleratorFactory:
             from_offchip_link = CommunicationLink(offchip_core, "Any", offchip_read_bandwidth, unit_energy_cost)
 
         # Create edge for each core
-        for core in cores:
+        for core in cores.values():
             edges.append((core, offchip_core, {"cl": to_offchip_link}))
             edges.append((offchip_core, core, {"cl": from_offchip_link}))
 
