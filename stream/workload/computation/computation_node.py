@@ -190,6 +190,27 @@ class ComputationNode(LayerNode, Node):
             )
         )
 
+    def __str__(self):
+        return f"ComputationNode{self.id}_{self.sub_id}"
+
+    def __repr__(self):
+        return str(self)
+
+    def __hash__(self) -> int:
+        """The hash operator of a node.
+
+        Returns:
+            the pre-computed hash
+        """
+        return self._static_hash_value
+
+    def __eq__(self, other: object):
+        """Fast equality comparison between two nodes"""
+        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
+        if not other:
+            return False
+        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
+
     def has_same_performance(self, other: object) -> bool:
         """Compare the equality between two nodes.
         Two nodes are considered equal if they have equal hardware performance, which happens following attributes are
@@ -278,6 +299,7 @@ class ComputationNode(LayerNode, Node):
             intra_core_tiling=self.intra_core_tiling,
             inter_core_tiling=self.inter_core_tiling,
             layer_dimension_names=self.user_given_layer_dimension_names,
+            kernel=self.kernel,
         )
         return deepcopy(mapping_attr)
 
