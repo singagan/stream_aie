@@ -483,6 +483,12 @@ class TiledWorkloadGenerationStage(Stage):
         for loop_dim in original_node.layer_dims:
             # multiply all outer-cn loop values that iterate over this loop_dim by their mult_factor
             dim_min = 0
+        finer_nodes: list[ComputationNode] = []
+        tensors: list[Tensor] = []
+        output_tensor_range_to_final_producer: dict[tuple[int], ComputationNode] = {}
+        group_id_manager = GroupIdManager(original_node)
+        for n in range(nb_cns):
+            outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
                 if outer_loop.dimension == loop_dim:
                     # current loop value of this outer-cn loop
@@ -567,6 +573,64 @@ class TiledWorkloadGenerationStage(Stage):
                 group_id=group_id,
                 partially_constant_operands=original_node.partially_constant_operands,
             )
+
+            # Override loop_ranges property
+            finer_node.update_loop_ranges(dim_min_max)
+            # Re-calculate pr loop ranges based on new loop_ranges
+            finer_node.calculate_pr_loop_ranges()
+            # Re-set the operand tensors for the new loop_ranges
+            finer_node.set_operand_tensors()
+
+            # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
+            for constant_operand in finer_node.constant_operands:
+                tensor = finer_node.operand_tensors[constant_operand]
+                tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
+
+            # Replace any of the tensors with identical tensors of previous finer nodes
+            for op, tensor in finer_node.operand_tensors.items():
+                if op == Constants.OUTPUT_LAYER_OP:
+                    continue
+                replaced = False
+                for previous_tensor in tensors:
+                    if tensor.equality_hash() == previous_tensor.equality_hash():
+                        finer_node.operand_tensors[op] = previous_tensor
+                        replaced = True
+                if not replaced:
+                    tensors.append(tensor)
+
+            output_tensor_loop_ranges = finer_node.operand_tensors[Constants.OUTPUT_LAYER_OP].loop_ranges
+            output_tensor_range_to_final_producer[output_tensor_loop_ranges] = finer_node
+
+            # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
+            # are unique
+            finer_node.data_produced_unique = int(
+                finer_node.operand_size_elem[Constants.OUTPUT_LAYER_OP]
+                * finer_node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+            )
+
+            # If the core allocation is fixed, we need to set the chosen core allocation.
+            # It's possible the core allocation contains multiple entries.
+            # In that case, we select the core allocation based on the group id.
+            if original_node.core_allocation_is_fixed:
+                assert group_id < len(
+                    original_node.possible_core_allocation
+                ), f"Group id {group_id} too large for core allocation list {original_node.core_allocation}"
+                chosen_core_allocation = original_node.possible_core_allocation[group_id]
+                finer_node.set_chosen_core_allocation(chosen_core_allocation)
+
+            finer_nodes.append(finer_node)
+
+        # Correct the output tensor of all CNs to the final producer (if multiple nodes handle the same output range)
+        for node in finer_nodes:
+            output_op = Constants.OUTPUT_LAYER_OP
+            output_range = node.operand_tensors[output_op].loop_ranges
+            final_producer = output_tensor_range_to_final_producer[output_range]
+            node.operand_tensors[output_op] = final_producer.operand_tensors[output_op]
+
+        # NOTE We take the first node as only unique one as they are all generated equally now.
+        unique_finer_nodes = [finer_nodes[0]]
+
+        return finer_nodes, unique_finer_nodes
 
     @staticmethod
     def get_intra_edges(nodes: list[ComputationNode]):
