@@ -42,12 +42,31 @@ class AIECodeGenerationStage(Stage):
 
     def generate_stream_workload(self, cme: StreamCostModelEvaluation) -> ModuleOp:
 
-        edges: dict[tuple[int, LayerOperand], EdgeOp] = {}
+        # (precision, [loop_range_0, .. loop_range_n-1])
+        edges_ranges: dict[tuple[int, LayerOperand], tuple[int, list[int]]] = {}
+        edge_ops: dict[tuple[int, LayerOperand], EdgeOp] = {}
 
-        # hardcoded edges because i don't know where to find the information
-        edges[0, LayerOperand("O")] = EdgeOp(MemRefType(IntegerType(32), (64, 64)), "Tensor(0, O)")
-        edges[0, LayerOperand("I")] = EdgeOp(MemRefType(IntegerType(16), (64, 64)), "Tensor(0, I)")
-        edges[0, LayerOperand("W")] = EdgeOp(MemRefType(IntegerType(16), (64, 64)), "Tensor(0, W)")
+        for node in cme.workload.node_list:
+            for operand in node.layer_operands:
+                key = (node.id, operand)
+                tensor = node.operand_tensors[operand]
+
+                if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
+                    precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                else:
+                    precision = tensor.origin.operand_precision[tensor.layer_operand]
+
+                if key not in edges_ranges:
+                    edges_ranges[key] = (precision, [x[1] for x in tensor.loop_ranges])
+
+                else:
+                    for i in range(len(edges_ranges[key][1])):
+                        edges_ranges[key][1][i] = max(edges_ranges[key][1][i], tensor.loop_ranges[i][1])
+
+        edge_ops = {
+            key: EdgeOp(MemRefType(IntegerType(precision), loop_ranges), str(key))
+            for key, (precision, loop_ranges) in edges_ranges.items()
+        }
 
         # create computation nodes for all computation nodes
         nodes: dict[ComputationNode, ComputationNodeOp] = {}
@@ -97,7 +116,7 @@ class AIECodeGenerationStage(Stage):
 
             tensor = transfer.tensors[0]
 
-            edge = edges[(tensor.id[0], tensor.id[2])]
+            edge = edge_ops[(tensor.id[0], tensor.id[2])]
 
             # TODO: why is this backwards?
             dest = str(link.sender)
@@ -143,7 +162,7 @@ class AIECodeGenerationStage(Stage):
 
         # add all nodes and transfers to the module
         node_ops = tuple(nodes.values())
-        all_ops = tuple(edges.values()) + tuple(transfer_ops) + node_ops
+        all_ops = tuple(edge_ops.values()) + tuple(transfer_ops) + node_ops
         module = ModuleOp(list(all_ops))
 
         return module
@@ -266,7 +285,6 @@ class AIECodeGenerationStage(Stage):
         # generate workload based on cme:
         module = self.generate_stream_workload(cme)
 
-        # Process stream thingies
         # StreamLoopRollerPass().apply(self.context, module)
 
         # Convert to AIE
