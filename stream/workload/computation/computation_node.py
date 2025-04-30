@@ -1,7 +1,8 @@
 from copy import deepcopy
-from math import prod
 from typing import TypeAlias
 
+from xdsl.dialects.builtin import MemRefType, i8, i16, i32
+from xdsl.dialects.memref import AllocOp, SubviewOp
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
@@ -15,10 +16,16 @@ from stream.node_tensor import NodeTensor
 from stream.utils import contains_wildcard
 from stream.workload.mapping import INTRA_CORE_MAPPING_DEFAULT, InterCoreMappingAttributes
 from stream.workload.node import Node
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
 LOOP_RANGES_T: TypeAlias = dict[LayerDim, tuple[int, int]]
+
+PRECISION_TYPE_MAP = {
+    8: i8,
+    16: i16,
+    32: i32,
+}
 
 
 class ComputationNode(LayerNode, Node):
@@ -44,9 +51,8 @@ class ComputationNode(LayerNode, Node):
         operand_tensor_reshape: OperandTensorReshape | None = None,
         produces_final_output: bool = False,
         group_id: int = 0,
-        sub_id: int = -1,
-        input_names: list[str] = [],
-        partially_constant_operands: list[LayerOperand] = [],
+        sub_id: int = -1,  # To distinguish alternative versions of this node
+        subview_ops: dict[SubviewOp] = {},
     ):
         """
         Args:
@@ -117,18 +123,18 @@ class ComputationNode(LayerNode, Node):
         self.nb_real_predecessors = None
         self.static_hash = self.__compute_static_hash()
 
-        self.set_operand_tensors()
+        try:
+            self.fusion_partition_dims = ComputationNode.FUSION_DIM_MAPPING[op_type]
+        except KeyError:
+            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
 
-        # Rename function
-        self.get_node_operand = self.memory_operand_links.mem_to_layer_op
-        self.extract_node_info = self.extract_layer_info
+        # Each ComputationNode will save a tensor for all its defined operands.
+        # For example, a conv layer will have an I tensor, W tensor and O tensor.
+        self.operand_tensors: dict[LayerOperand, SubviewTensor] = {}
+        self.set_operand_tensors(subview_ops)
 
-    def set_operand_tensors(self):
-        """Each ComputationNode will save a tensor for all its defined operands.
-        For example, a conv layer will have an I tensor, W tensor and O tensor.
-        """
-        self.operand_tensors: dict[LayerOperand, Tensor] = {}
-
+    def set_operand_tensors(self, subview_ops: dict[SubviewOp] | None):
+        """Set the operand tensors for this node based on the given subview ops."""
         for op in self.layer_operands:
             if op == Constants.OUTPUT_LAYER_OP:
                 precision = self.operand_precision.final_output_precision
@@ -137,10 +143,23 @@ class ComputationNode(LayerNode, Node):
 
             op_dimensionality_order = self.operand_dimensionality_order[op]
             ranges = tuple([self.loop_ranges[dim] for dim in op_dimensionality_order])
-            size = prod([upper_bound - lower_bound for (lower_bound, upper_bound) in ranges]) * precision
-            self.operand_tensors[op] = Tensor(
-                size=size,
-                origin=self,
+            offsets = [x[0] for x in ranges]
+            sizes = [x[1] - x[0] for x in ranges]
+            strides = [1] * len(ranges)
+            precision_type = PRECISION_TYPE_MAP.get(precision)
+            memref_type = MemRefType(precision_type, sizes)
+            if subview_ops:
+                assert op in subview_ops, f"SubviewOp not found for operand {op}"
+                memref_source = subview_ops[op]
+            else:
+                memref_source = AllocOp([], [], memref_type)
+            self.operand_tensors[op] = SubviewTensor(
+                memref_source=memref_source,
+                memref_type=memref_type,
+                offsets=offsets,
+                sizes=sizes,
+                strides=strides,
+                cn_source=self,
                 layer_operand=op,
                 loop_dimensions=op_dimensionality_order,
                 loop_ranges=ranges,

@@ -24,7 +24,7 @@ from stream.workload.dependency_propagation.dummy_node import DummyNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +484,7 @@ class TiledWorkloadGenerationStage(Stage):
             # multiply all outer-cn loop values that iterate over this loop_dim by their mult_factor
             dim_min = 0
         finer_nodes: list[ComputationNode] = []
-        tensors: list[Tensor] = []
+        tensors: list[SubviewTensor] = []
         output_tensor_range_to_final_producer: dict[tuple[int], ComputationNode] = {}
         group_id_manager = GroupIdManager(original_node)
         for n in range(nb_cns):
@@ -525,41 +525,21 @@ class TiledWorkloadGenerationStage(Stage):
             tile.operand_size_elem[Constants.OUTPUT_LAYER_OP] * tile.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
         )
 
-    def _set_core_allocation_for_tile(self, tile: ComputationNode, group_id: int, original_node: ComputationNode):
-        """If the core allocation is fixed, we need to set the chosen core allocation. It's possible the core allocation
-        contains multiple entries. In that case, we select the core allocation based on the group id.
-        Only set the core allocation if the number of core allocations is equal to the inter-core tiling size, i.e.
-        the user meant to parallelize the original nodes over the given cores. Otherwise, the CO or GA will set the
-        allocation later."""
-        inter_core_tiling_size = get_inter_core_tiling_size(original_node)
-        if len(original_node.possible_core_allocation) == inter_core_tiling_size:
-            assert group_id < len(
-                original_node.possible_core_allocation
-            ), f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
-            chosen_core_allocation = original_node.possible_core_allocation[group_id]
-            tile.set_chosen_core_allocation(chosen_core_allocation)
+            # Get the operand tensors SubViewOps of the original node to build the SubViewTensors from
+            original_subviews = {}
+            for layer_op, tensor in original_node.operand_tensors.items():
+                original_subviews[layer_op] = tensor.subview
 
-    def create_tile(
-        self,
-        original_node: ComputationNode,
-        sub_id: int,
-        tile_attrs: LayerNodeAttributes,
-        produces_final_output: bool,
-        group_id: int,
-    ):
-        if isinstance(original_node, GeneratedComputationNode):
-            return GeneratedComputationNode(
-                node_id=original_node.id,
-                sub_id=sub_id,
-                base_id=original_node.base_id,
-                gen_id=original_node.gen_id,
-                gen_split_layer_dim=original_node.gen_split_layer_dim,
-                node_name=original_node.name,
-                node_attr=tile_attrs,
-                mapping_attr=original_node.extract_inter_core_mapping_attr(),
+            finer_node = ComputationNode(
+                node_id=original_node_id,
+                sub_id=n,
+                node_name=node_name,
+                node_attr=finer_node_attrs,
+                mapping_attr=finer_node_mapping,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
+                subview_ops=original_subviews,
             )
         else:
             return ComputationNode(
@@ -579,7 +559,7 @@ class TiledWorkloadGenerationStage(Stage):
             # Re-calculate pr loop ranges based on new loop_ranges
             finer_node.calculate_pr_loop_ranges()
             # Re-set the operand tensors for the new loop_ranges
-            finer_node.set_operand_tensors()
+            finer_node.set_operand_tensors(original_subviews)
 
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
             for constant_operand in finer_node.constant_operands:

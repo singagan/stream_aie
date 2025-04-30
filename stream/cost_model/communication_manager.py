@@ -8,7 +8,7 @@ from zigzag.datatypes import Constants, MemoryOperand
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.utils import intersections
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -56,11 +56,11 @@ class CommunicationLinkEvent:
         type: str,
         start: int,
         end: int,
-        tensor: Tensor,
+        tensors: list[SubviewTensor],
         energy: float,
-        activity: int,
-        sender: Core,
-        receiver: Core,
+        activity: float,
+        source: Core,
+        destinations: list[Core],
     ) -> None:
         self.type = type
         self.start = start
@@ -69,13 +69,14 @@ class CommunicationLinkEvent:
         self.tensor = tensor
         self.energy = energy
         self.activity = activity
-        self.sender = sender
-        self.receiver = receiver
+        self.source = source
+        self.destinations = destinations
 
     def __str__(self) -> str:
         return (
-            f"CommunicationLinkEvent(type={self.type}, start={self.start}, end={self.end}, tensor={self.tensor}, "
-            f"energy={self.energy:.2e}, activity={self.activity:.2f}, sender={self.sender}, receiver={self.receiver})"
+            f"CommunicationLinkEvent(type={self.type}, src={self.source}, dests={self.destinations}, "
+            f"start={self.start}, end={self.end}, tensors={self.tensors}, "
+            f"energy={self.energy:.2e}, activity={self.activity:.2f})"
         )
 
     def __repr__(self) -> str:
@@ -88,10 +89,9 @@ class CommunicationLinkEvent:
         return self.tensor.layer_operand
 
     def get_origin(self):
-        """
-        Returns the origin node of the tensor for this event.
-        """
-        return self.tensor.origin
+        origins = [tensor.cn_source for tensor in self.tensors]
+        assert all([origin == origins[0] for origin in origins])
+        return origins[0]
 
 
 class CommunicationManager:
@@ -155,9 +155,9 @@ class CommunicationManager:
 
     def transfer_tensor(
         self,
-        sender: Core,
-        receiver: Core,
-        tensor: Tensor,
+        tensor: SubviewTensor,
+        sender: Core | int,
+        receiver: Core | int,
         receiver_memory_operand: MemoryOperand,
         start_timestep: int,
         duration: int,
@@ -184,11 +184,11 @@ class CommunicationManager:
                 type="transfer",
                 start=start_timestep,
                 end=end_timestep,
-                tensor=tensor,
-                energy=duration * link.unit_energy_cost * link_bw_fraction,
-                activity=ceil(link_bw_fraction * link.bandwidth),
-                sender=sender,
-                receiver=receiver,
+                tensors=[tensor],
+                energy=duration * link.unit_energy_cost,
+                activity=link.bandwidth,
+                source=sender,
+                destinations=[receiver],
             )
             for link in links
         ]
@@ -237,9 +237,14 @@ class CommunicationManager:
         core = self.accelerator.get_core(core_id)
         assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        tensors_per_link: dict["CommunicationLink", list[Tensor]] = {}
-
-        # Output operand
+        tensors_per_link: dict["CommunicationLink", list[SubviewTensor]] = {}
+        # Determine the flow of data from source to destination depending on the operands
+        if Constants.OUTPUT_MEM_OP in too_large_operands:
+            source = core
+            destinations = [offchip_core]
+        else:
+            source = offchip_core
+            destinations = [core]
         if Constants.OUTPUT_MEM_OP in too_large_operands:
             links_to_offchip = set(self.get_all_links_for_pair(core, offchip_core)[0])  # Take the first path
 
@@ -266,26 +271,13 @@ class CommunicationManager:
         }
 
         # Get idle window of the involved links
-        block_start = self.get_links_idle_window(tensor_bw_per_link, start_timestep, duration)
-
-        # # Block them
-        for link, tensor_bws in tensor_bw_per_link.items():
-            for tensor, bandwidth in tensor_bws:
-                operand = tensor.memory_operand
-                sender = core if operand == Constants.OUTPUT_MEM_OP else offchip_core
-                receiver = offchip_core if operand == Constants.OUTPUT_MEM_OP else core
-                cle, is_new_event = link.block(
-                    block_start, duration, tensor, bandwidth=bandwidth, sender=sender, receiver=receiver
-                )
-                if is_new_event:
-                    event = CommunicationEvent(
-                        id=self.event_id,
-                        tasks=[cle],
-                        sender=sender,
-                        receiver=receiver,
-                    )
-                    self.events.append(event)
-                    self.event_id += 1
+        block_start = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors_per_link)
+        # Block them
+        for link, req_bw in links_to_block.items():
+            req_bw = ceil(req_bw)
+            link.block(
+                block_start, duration, tensors_per_link[link], activity=req_bw, source=source, destinations=destinations
+            )
         return block_start
 
     @staticmethod
@@ -303,7 +295,17 @@ class CommunicationManager:
         tensor_bw_per_link: dict["CommunicationLink", list[tuple[Tensor, int]]],
         start_timestep: int,
         duration: int,
-    ):
+        tensors_per_link: dict["CommunicationLink", list[SubviewTensor]],
+    ) -> int:
+        """Return the timestep at which tensor can be transfered across the links.
+        Both links must have an idle window large enough for the transfer.
+        The timestep must be greater than or equal to best_case_start.
+
+        Args:
+            links (dict): CommunicationLinks involved in the transfer and their required bandwidth.
+            best_case_start (int): The best case start timestep of the transfer.
+            duration (int): The required duration of the idle window.
+            tensors (list): The tensors to be transferred. Used to broadcast from previous transfer.
         """
         Finds the earliest idle window for all involved links, normalizing bandwidth if needed.
         Returns the start time for the transfer/block.

@@ -10,7 +10,7 @@ from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -30,9 +30,133 @@ class TransferCause(Enum):
 
 class CoalaScheduler:
     """
-    Schedules computation nodes on an accelerator, handling memory, communication, and subtensor logic.
-    Uses a class-based approach for modularity and extensibility.
-    Handles splitting of tensors into subtensors when only partial data is needed by a node.
+    tensors_this_candidate_needs: list[SubviewTensor] = []
+    tensors_operands: list[MemoryOperand] = []
+    # Constant input operands
+    for layer_op in node.constant_operands:
+        memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
+        if memory_op in node.too_large_operands:
+            continue
+        tensors_this_candidate_needs.append(node.operand_tensors[layer_op])
+        tensors_operands.append(memory_op)
+    # Non-constant input operands
+    for pred, node, edge_data in sorted(G.in_edges(node, data=True), key=itemgetter(0)):
+        if pred.id == node.id:
+            continue  # Skip if predecessor was from the same layer (intra-edge)
+        consumer_layer_op = edge_data["operand"]
+        consumer_memory_op = node.memory_operand_links[consumer_layer_op]
+        if consumer_memory_op in node.too_large_operands:
+            continue  # Skip if tensor will be fetched fromm offchip throughout computation
+        pred_output_tensor = pred.operand_tensors[pred.output_operand]
+        tensors_this_candidate_needs.append(pred_output_tensor)
+        tensors_operands.append(consumer_memory_op)
+    if tensors_this_candidate_needs:
+        tensors_this_candidate_needs, tensors_operands = zip(
+            *sorted(zip(tensors_this_candidate_needs, tensors_operands))
+        )
+    return tensors_this_candidate_needs, tensors_operands
+
+
+def clear_memories(
+    accelerator: "Accelerator",
+    core: Core,
+    memory_operands: list[MemoryOperand],
+    timestep: int,
+    exceptions: list[SubviewTensor] = [],
+):
+    total_eviction_to_offchip_link_energy = 0
+    total_eviction_to_offchip_memory_energy = 0
+    for too_large_operand in memory_operands:
+        (
+            timestep,
+            eviction_link_energy_cost,
+            eviction_memory_energy_cost,
+        ) = accelerator.remove_all(core, too_large_operand, timestep, exceptions, write_back_to_offchip=True)
+        total_eviction_to_offchip_link_energy += eviction_link_energy_cost
+        total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
+    return (
+        total_eviction_to_offchip_link_energy,
+        total_eviction_to_offchip_memory_energy,
+        timestep,
+    )
+
+
+def decrease_priority(
+    tensors: list[SubviewTensor],
+    tensors_operands: list[MemoryOperand],
+    accelerator: "Accelerator",
+    node: ComputationNode,
+):
+    for tensor_used_by_node, tensor_memory_operand in zip(tensors, tensors_operands):
+        # TODO: tensor_memory_operand will be 'O' for activation tensors.
+        # TODO: If the memory between input and output is not shared, this will give a wrong instance.
+        assert node.chosen_core_allocation is not None
+        top_instance = accelerator.get_top_instance_of_core(node.chosen_core_allocation, tensor_memory_operand)
+        tensor_used_by_node.instance_priorities[top_instance] -= 1
+
+
+def check_for_removal(
+    tensors: list[SubviewTensor],
+    accelerator: "Accelerator",
+    node: ComputationNode,
+    G: ComputationNodeWorkload,
+    timestep: int,
+):
+    offchip_core_id = accelerator.offchip_core_id
+    for tensor_used_by_node in tensors:
+        if tensor_used_by_node.get_total_priority() == 0:
+            instances_storing_tensor, _ = accelerator.memory_manager.find_tensor_in_top_instances(tensor_used_by_node)
+            for instance_storing_tensor in instances_storing_tensor:
+                core_ids_of_instance = [
+                    core.id for core in accelerator.memory_manager.cores_per_top_instance[instance_storing_tensor]
+                ]
+                # If this tensor is an output tensor, find all nodes that needed it
+                # to get an accurate timestep at which it can be removed
+                timestep_for_removal = timestep
+                if tensor_used_by_node.layer_operand == tensor_used_by_node.cn_source.output_operand:
+                    origin = tensor_used_by_node.cn_source
+                    if offchip_core_id in core_ids_of_instance:
+                        # If wanting to discard it from offchip, look at the max end time across all successors
+                        nodes_that_needed_tensor = [n for n in G.successors(origin) if n.id != origin.id]
+                    else:
+                        # If discarding it from a regular core, look at the max end time successors that used it from
+                        # that instance
+                        nodes_that_needed_tensor = [
+                            n
+                            for n in G.successors(origin)
+                            if n.chosen_core_allocation in core_ids_of_instance and n.id != origin.id
+                        ]
+                    end_times = [n.end for n in nodes_that_needed_tensor if n.end is not None]
+                    max_end_time = max(end_times, default=timestep_for_removal)
+                    # assert max_end_time != -1, "There should be at least one successor."
+                    timestep_for_removal = max_end_time
+
+                # Get a core tied to the top_instance we want to remove it on.
+                core = accelerator.memory_manager.cores_per_top_instance[instance_storing_tensor][0]
+                accelerator.remove(
+                    tensor_used_by_node,
+                    core,
+                    tensor_used_by_node.memory_operand,
+                    timestep_for_removal,
+                )
+
+
+def schedule_graph(
+    G: ComputationNodeWorkload,
+    accelerator: "Accelerator",
+    cores_idle_from: dict[int, int] | None = None,
+    operands_to_prefetch: list[LayerOperand] = [],
+    scheduling_order: list[tuple[int, int]] | None = None,
+) -> tuple[int, float, float, float, float, float, float, float, float, float]:
+    """Schedule the nodes of graph G across the cores in the system.
+    Each node should have a core_allocation and runtime set.
+
+    Args:
+        G : Graph containing the nodes to be scheduled.
+        accelerator (Accelerator): The accelerator to schedule the nodes on.
+        cores_start_offset (dict, optional): A dict containing for each core_id its start offset. Defaults to None.
+        operands_to_prefetch (list, optional): The layer operands that should be prefetched at the start of the
+            schedule.
     """
 
     def __init__(
