@@ -206,18 +206,90 @@ def schedule_graph(
         self.initialize_tensor_priorities()
         self.initialize_offchip_tensors()
 
-    def _initialize_scheduling_order_lookup(self):
-        """
-        Initializes lookup dictionaries for fast access from (id, sub_id) to scheduling order index.
-        """
-        # {item: idx for idx, item in enumerate(self.scheduling_order)}
-        self.scheduling_order_lookup: dict[tuple[int, int], int] = {}
-        self.scheduling_order_lookup_tiered: dict[int, dict[int, int]] = {}
-        for idx, item in enumerate(self.scheduling_order):
-            self.scheduling_order_lookup[item] = idx
-            layer_id, sub_id = item
-            if layer_id not in self.scheduling_order_lookup_tiered:
-                self.scheduling_order_lookup_tiered[layer_id] = {sub_id: idx}
+    # Get all the nodes with no successors that produce final outputs, used for off-loading final outputs
+    sink_layers = sorted(set(n.id for n, d in G.out_degree() if d == 0))
+    sink_layer_nodes = set((n for n in G.node_list if (n.id in sink_layers) and n.produces_final_output))
+
+    # Get the offchip core id and core
+    offchip_core_id = accelerator.offchip_core_id
+    assert offchip_core_id is not None
+    offchip_core = accelerator.get_core(offchip_core_id)
+
+    # Schedule preparation:
+    # 1. Initialize the memory instance priorities for each tensor
+    initialize_priorities(G, accelerator)
+    # 2. Add the constant operand tensors of all nodes to the off-chip initially
+    initialize_offchip_tensors(G, accelerator)
+    # 3. Prefetch the constant operands that should be prefetched to their core
+    (
+        prefetch_cn_offchip_link_energy,
+        prefetch_cn_offchip_memory_energy,
+        prefetch_eviction_to_offchip_link_energy,
+        prefetch_eviction_to_offchip_memory_energy,
+    ) = prefetch_constant_operands(G, accelerator, operands_to_prefetch)
+    total_cn_offchip_link_energy += prefetch_cn_offchip_link_energy
+    total_cn_offchip_memory_energy += prefetch_cn_offchip_memory_energy
+    total_eviction_to_offchip_link_energy += prefetch_eviction_to_offchip_link_energy
+    total_eviction_to_offchip_memory_energy += prefetch_eviction_to_offchip_memory_energy
+
+    done = False
+    while not done:
+        # Get the best candidate given the selection priority
+        best_candidate, preds_end = get_best_candidate(candidates, scheduling_order)
+
+        # Get the core this candidate will be scheduled on
+        core_id = best_candidate.chosen_core_allocation
+        assert core_id is not None
+        core = accelerator.get_core(core_id)
+        # Earliest start time is when core is available or predecessors finished
+        start = max(cores_idle_from[core_id], preds_end)
+        # Step 0
+        tensors_this_candidate_needs, tensors_operands = get_tensors_needed_for_node(best_candidate, G)
+        output_tensor = best_candidate.operand_tensors[best_candidate.output_operand]
+        # Step 1
+        # There could be operands that are too large to store in the highest memory on the core
+        # The tensors stored in these memories should be evicted and potentially written back to off-chip
+        # Clear these memories (this might delay the potential start time if things have to written to off-chip)
+        timestep = start
+        (
+            clear_link_energy,
+            clear_memory_energy,
+            timestep,
+        ) = clear_memories(
+            accelerator,
+            core,
+            best_candidate.too_large_operands,
+            timestep,
+            exceptions=tensors_this_candidate_needs + (output_tensor,),
+        )
+        total_eviction_to_offchip_link_energy += clear_link_energy
+        total_eviction_to_offchip_memory_energy += clear_memory_energy
+        # Step 2
+        # The computation might need tensors that are currently not present in the core's memories
+        # We need to fetch these tensors from either off-chip or from the core where they are present
+        # Transfer these tensors from wherever they are currently residing to this core
+        print(f"Scheduling {best_candidate} on core {core_id} at timestep {timestep}")
+        for tensor, tensor_operand in zip(tensors_this_candidate_needs, tensors_operands):
+            # Transfer the tensor
+            (
+                transfer_complete_timestep,
+                transfer_link_energy_cost,
+                transfer_memory_energy_cost,
+                eviction_link_energy_cost,
+                eviction_memory_energy_cost,
+                came_from_offchip,
+            ) = accelerator.transfer_tensor_to_core(
+                tensor,
+                core_id,
+                tensor_operand,
+                tensors_this_candidate_needs + (output_tensor,),
+            )
+            # Update the possible start time of this node
+            timestep = max(timestep, transfer_complete_timestep)
+            # Add the energy costs to their respective trackers
+            if came_from_offchip:
+                total_cn_offchip_link_energy += transfer_link_energy_cost
+                total_cn_offchip_memory_energy += transfer_memory_energy_cost
             else:
                 self.scheduling_order_lookup_tiered[layer_id][sub_id] = idx
 
