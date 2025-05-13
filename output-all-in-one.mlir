@@ -6,11 +6,9 @@ builtin.module {
     %tile-0-2 = aie.tile(0, 2)
     aiex.runtime_sequence(%0 : memref<64x64xi16>, %1 : memref<64x64xi16>, %2 : memref<64x64xi16>) {
       // all parts of w to 02 and 03: (wrong data)
-      aiex.npu.dma_wait {symbol = @of_00_W}
       aiex.npu.dma_memcpy_nd(%1[0, 0, 0, 0][1, 1, 64, 64][0, 32, 64, 1]) {id = 1 : i64, issue_token = true, metadata = @of_00_W} : memref<64x64xi16>
 
       // all parts of input to 02 and 03: (wrong data)
-      aiex.npu.dma_wait {symbol = @of_00_I}
       aiex.npu.dma_memcpy_nd(%0[0, 0, 0, 0][1, 1, 64, 64][0, 0, 64, 1]) {id = 0 : i64, issue_token = true, metadata = @of_00_I} : memref<64x64xi16>
 
       // first outputs are now ready:
@@ -110,7 +108,7 @@ builtin.module {
     aie.objectfifo @of_00_I(%tile-0-0, {%tile-0-1}, 1 : i32) : !aie.objectfifo<memref<2x32x32xi16>>
     aie.objectfifo @of_00to02_I_mem(%tile-0-1 dimensionsToStream [<size = 8, stride = 128>, <size = 8, stride = 4>, <size = 4, stride = 32>, <size = 4, stride = 1>], {%tile-0-2}, 1 : i32) : !aie.objectfifo<memref<32x32xi16>>
     aie.objectfifo @of_00to03_I_mem(%tile-0-1 dimensionsToStream [<size = 8, stride = 128>, <size = 8, stride = 4>, <size = 4, stride = 32>, <size = 4, stride = 1>], {%tile-0-3}, 1 : i32) : !aie.objectfifo<memref<32x32xi16>>
-    aie.objectfifo.link [@of_00_I] -> [@of_00to02_W_mem, @of_00to03_I_mem]([] [0, 1024])
+    aie.objectfifo.link [@of_00_I] -> [@of_00to02_I_mem, @of_00to03_I_mem]([] [0, 1024])
 
     // output fifos: (split per tile)
     aie.objectfifo @of_02to00_O_mem(%tile-0-2, {%tile-0-1}, 1 : i32) : !aie.objectfifo<memref<32x32xi16>>
