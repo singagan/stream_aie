@@ -674,6 +674,67 @@ class SetJoin(RewritePattern):
 
 
 @dataclass
+class CollapseMemcpys(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: DmaMemcpyNdOp, rewriter: PatternRewriter):
+        # find next memcpy with the same metadata
+        next_op = op
+        while True:
+            next_op = next_op.next_op
+            if next_op is None:
+                return
+            if isinstance(next_op, DmaMemcpyNdOp) and next_op.metadata == op.metadata:
+                break
+
+        # strides should fully overlap
+        # gather offsets, sizes and strides
+        offset_1 = cast(tuple[int, ...], op.static_offsets.get_values())[-1]
+        sizes_1 = cast(tuple[int, ...], op.static_sizes.get_values())
+        strides_1 = cast(tuple[int, ...], op.static_strides.get_values())
+
+        first_non_1 = next((i for i, x in enumerate(sizes_1) if x != 1), len(sizes_1))
+        sizes_1 = sizes_1[first_non_1:]
+        strides_1 = strides_1[first_non_1:]
+
+        offset_2 = cast(tuple[int, ...], next_op.static_offsets.get_values())[-1]
+        sizes_2 = cast(tuple[int, ...], next_op.static_sizes.get_values())
+        strides_2 = cast(tuple[int, ...], next_op.static_strides.get_values())
+
+        first_non_1 = next((i for i, x in enumerate(sizes_2) if x != 1), len(sizes_2))
+        sizes_2 = sizes_2[first_non_1:]
+        strides_2 = strides_2[first_non_1:]
+
+        # full overlap:
+        if sizes_1 == sizes_2 and strides_1 == strides_2:
+            if (offset_2 - offset_1) == 0:
+                # special case as only 4th can be zero
+                sizes_1 = (1,) * (3 - len(sizes_1)) + sizes_1
+                strides_1 = (0,) * (3 - len(strides_1)) + strides_1
+            sizes_1 = (2,) + sizes_1
+            strides_1 = (offset_2 - offset_1,) + strides_1
+
+            if len(sizes_1) > 4:
+                # not possible to collapse
+                return
+            sizes_1 = (1,) * (4 - len(sizes_1)) + sizes_1
+            strides_1 = (0,) * (4 - len(strides_1)) + strides_1
+            # remove next op
+            new_op = DmaMemcpyNdOp(
+                op.memref,
+                op.static_offsets,
+                sizes_1,
+                strides_1,
+                op.metadata,
+                op.id,
+                op.issue_token,
+                op.offsets,
+                op.strides,
+            )
+            rewriter.replace_matched_op(new_op)
+            rewriter.erase_op(next_op)
+
+
+@dataclass
 class OfNameRewriter(RewritePattern):
     changes: dict[str, str]
 
@@ -1031,6 +1092,8 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         PatternRewriteWalker(SetJoin(runtime_sequence, object_fifo_manager), apply_recursively=False).rewrite_module(op)
+
+        PatternRewriteWalker(CollapseMemcpys()).rewrite_module(op)
 
         # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
