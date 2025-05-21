@@ -231,13 +231,44 @@ def schedule_graph(
             candidates.append((self.cores_idle_from[core_allocation], source_node))  # type: ignore
         return candidates
 
-    def get_sink_layer_nodes(self):
-        """
-        Returns all nodes with no successors that produce final outputs (used for off-loading outputs).
-        """
-        sink_layer_ids = self.G.get_sink_layer_ids()
-        sink_layer_nodes = set((n for n in self.G.node_list if (n.id in sink_layer_ids) and n.produces_final_output))
-        return sink_layer_nodes
+        # Step 4
+        # Make space for the output tensor of this computation node and spawn it when evictions are complete
+        # If the output operand is in the too large operands, add it to off-chip, otherwise add it to this core's
+        # output memory
+        output_layer_operand = best_candidate.output_operand
+        output_memory_operand = best_candidate.memory_operand_links[output_layer_operand]
+        if output_memory_operand in best_candidate.too_large_operands:
+            core_to_add_output_to = offchip_core
+        else:
+            core_to_add_output_to = core
+        (
+            evictions_complete_timestep,
+            eviction_link_energy_cost,
+            eviction_memory_energy_cost,
+        ) = accelerator.make_space_for(
+            output_tensor,
+            core_to_add_output_to,
+            output_memory_operand,
+            timestep,
+            tensors_this_candidate_needs + (output_tensor,),
+        )
+        total_eviction_to_offchip_link_energy += eviction_link_energy_cost
+        total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
+        start = evictions_complete_timestep
+        end = start + best_candidate.get_runtime()
+        accelerator.spawn(
+            output_tensor,
+            core_to_add_output_to,
+            output_memory_operand,
+            initial_timestep=start,
+            available_timestep=end,
+        )
+        # Fix the memory usage and nb of stored tensors until the CN ends
+        accelerator.fix_memory_usage_and_nb_stored_tensors(
+            core,
+            start,
+            end,
+        )
 
     def initialize_tensor_priorities(self):
         """
