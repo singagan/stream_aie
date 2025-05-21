@@ -404,6 +404,12 @@ def schedule_graph(
             initial_timestep=start,
             available_timestep=end,
         )
+        # Fix the memory usage and nb of stored tensors until the CN ends
+        accelerator.fix_memory_usage_and_nb_stored_tensors(
+            core,
+            start,
+            end,
+        )
 
         # Step 5
         # Update the start and end time of the node
