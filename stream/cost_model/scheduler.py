@@ -332,6 +332,7 @@ def schedule_graph(
         # The computation might need tensors that are currently not present in the core's memories
         # We need to fetch these tensors from either off-chip or from the core where they are present
         # Transfer these tensors from wherever they are currently residing to this core
+        print(f"Scheduling {best_candidate} on core {core_id} at timestep {timestep}")
         for tensor, tensor_operand in zip(tensors_this_candidate_needs, tensors_operands):
             # Transfer the tensor
             (
@@ -402,6 +403,12 @@ def schedule_graph(
             output_memory_operand,
             initial_timestep=start,
             available_timestep=end,
+        )
+        # Fix the memory usage and nb of stored tensors until the CN ends
+        accelerator.fix_memory_usage_and_nb_stored_tensors(
+            core,
+            start,
+            end,
         )
 
         # Step 5

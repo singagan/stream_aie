@@ -8,6 +8,8 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.workload.tensor import SubviewTensor
 
+ENABLE_BROADCASTING = False
+
 
 def get_bidirectional_edges(
     core_a: "Core",
@@ -171,17 +173,21 @@ class CommunicationLink:
         """
         valid_windows: list[tuple[int, int]] = []
         ## Check if this tensor has already been transferred on this link before
-        # If so, check duration and earliest timestep requirements of this call
-        for tensor in tensors:
-            if tensor in self.tensors:
-                previous_events = self.tensors[tensor]
-                for previous_event in previous_events:
-                    # Previous event needs to be long enough
-                    duration_valid = previous_event.duration >= duration
-                    # Previous event needs to have happened at late enough time
-                    earliest_t_valid = previous_event.start >= earliest_t
-                    if duration_valid and earliest_t_valid:
-                        valid_windows.append((previous_event.start, previous_event.end))
+        if ENABLE_BROADCASTING:
+            # If so, check duration and earliest timestep requirements of this call
+            for tensor in tensors:
+                if tensor in self.tensors:
+                    previous_events = self.tensors[tensor]
+                    # Get the latest valid previous event
+                    duration_and_earliest_t_valid_previous_events = [
+                        previous_event
+                        for previous_event in previous_events
+                        if previous_event.start >= earliest_t and previous_event.duration >= duration
+                    ]
+                    if duration_and_earliest_t_valid_previous_events:
+                        # Add the latest valid previous event to the list of valid windows
+                        previous_valid_event = duration_and_earliest_t_valid_previous_events[-1]
+                        valid_windows.append((previous_valid_event.start, previous_valid_event.end))
         ## Check other possible periods given the activity
         activities = np.cumsum(self.active_deltas)
         earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
