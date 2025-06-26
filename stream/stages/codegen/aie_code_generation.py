@@ -8,7 +8,6 @@ from xdsl.printer import Printer
 from zigzag.datatypes import Constants, LayerOperand
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, EmptySSAValue, Stream, TransferOp
-from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
