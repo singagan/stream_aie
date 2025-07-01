@@ -1,4 +1,5 @@
 from typing import Any
+from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
 
 
@@ -31,3 +32,11 @@ class Core(ZigZagCore):
     def from_zigzag_core(core: ZigZagCore) -> "Core":
         core.__class__ = Core
         return core  # type: ignore
+
+    def get_memory_capacity(self) -> int:
+        """
+        Get the total memory capacity of the core in bits.
+        NOTE that this assumes the core has a single top level memory shared across operands.
+        """
+        memory_operand = MemoryOperand("I1")  # Assuming 'I1' is the top level memory operand
+        return self.get_top_memory_instance(memory_operand).size

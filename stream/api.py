@@ -11,9 +11,7 @@ from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorit
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
-from stream.stages.generation.tiled_workload_generation import (
-    TiledWorkloadGenerationStage,
-)
+from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
@@ -72,6 +70,7 @@ def optimize_allocation_ga(
     os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
 
     # Output paths
+    tiled_workload_path = f"{output_path}/{experiment_id}/tiled_workload.pickle"
     cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
     scme_path = f"{output_path}/{experiment_id}/scme.pickle"
 
@@ -103,6 +102,7 @@ def optimize_allocation_ga(
             nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
             mode=mode,
             layer_stacks=layer_stacks,
+            tiled_workload_path=tiled_workload_path,
             cost_lut_path=cost_lut_path,
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
@@ -130,8 +130,10 @@ def optimize_allocation_co(
     os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
 
     # Output paths
+    tiled_workload_path = f"{output_path}/{experiment_id}/tiled_workload.pickle"
     cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
     allocations_path = f"{output_path}/{experiment_id}/waco/"
+    tiled_workload_post_co_path = f"{output_path}/{experiment_id}/tiled_workload_post_co.pickle"
     cost_lut_post_co_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
     scme_path = f"{output_path}/{experiment_id}/scme.pickle"
 
@@ -151,8 +153,6 @@ def optimize_allocation_co(
                 TilingGenerationStage,
                 TiledWorkloadGenerationStage,
                 ZigZagCoreMappingEstimationStage,
-                SetFixedAllocationPerformanceStage,
-                SchedulingOrderGenerationStage,
                 ConstraintOptimizationAllocationStage,
             ],
             accelerator=hardware,  # required by AcceleratorParserStage
@@ -161,8 +161,10 @@ def optimize_allocation_co(
             loma_lpf_limit=6,  # required by LomaEngine
             mode=mode,
             layer_stacks=layer_stacks,
+            tiled_workload_path=tiled_workload_path,
             cost_lut_path=cost_lut_path,
             allocations_path=allocations_path,
+            tiled_workload_post_co_path=tiled_workload_post_co_path,
             cost_lut_post_co_path=cost_lut_post_co_path,
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             latency_attr="ideal_temporal_cycles"
