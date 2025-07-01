@@ -27,6 +27,7 @@ class AcceleratorFactory:
             cores.append(core)
             unique_shared_mem_group_ids.add(shared_mem_group_id)
 
+
         # Extra check on shared memory
         if self.have_non_identical_shared_memory(cores):
             raise ValueError(

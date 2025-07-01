@@ -11,9 +11,12 @@ from zigzag.workload.layer_attributes import (
     MemoryOperandLinks,
 )
 from zigzag.workload.layer_node import MappingAttributes as IntraCoreMappingAttributes
+from stream.workload.kernel import AIEKernel
 
-TILING_T: TypeAlias = list[tuple[LayerDim, int]]
+
 TILING_WILDCARD_T: TypeAlias = list[tuple[LayerDim, int | Literal["*", "all"]]]
+
+TILING_T: TypeAlias = list[tuple[LayerDim, int | Literal["*", "all"]]]
 
 INTRA_CORE_MAPPING_DEFAULT = IntraCoreMappingAttributes(
     spatial_mapping=SpatialMapping.empty(),

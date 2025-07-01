@@ -37,6 +37,7 @@ class MappingFactory:
                 inter_core_tiling=inter_core_tiling,
                 intra_core_tiling=intra_core_tiling,
                 layer_dimension_names=layer_dimension_names,
+                kernel=kernel,
             )
             all_mappings[op_type] = mapping
         return all_mappings

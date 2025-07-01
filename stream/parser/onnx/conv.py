@@ -50,6 +50,13 @@ class ConvParser(OnnxComputeOperatorParser):
 
         # 1D Conv case: append dimensions of size 1 so equation holds. Conv in FY dimension
         is_1d_conv = len(kernel_shape) == 1
+        # IMPORTANT: If any of the input loops require padding, they should be defined as the rightmost dimensions in
+        # the equation. This is because we construct the dimensionality order and then add the padding to those last
+        # dimensions in the order
+        if group_size > 1:
+            data["equation"] = "O[b][g][oy][ox][c]+=W[g][c][fy][fx]*I[b][g][iy][ix][c]"
+        else:
+            data["equation"] = "O[b][g][oy][ox][c]+=W[k][c][fy][fx]*I[b][g][iy][ix][c]"
 
         # Get dimension sizes from input parameters
         assert input_shape[0] == output_shape[0], "Batch size is different for input and output activations."
