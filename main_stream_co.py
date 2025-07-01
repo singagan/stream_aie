@@ -5,9 +5,7 @@ from stream.api import optimize_allocation_co
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
-from stream.visualization.schedule import (
-    visualize_timeline_plotly,
-)
+from stream.visualization.schedule import visualize_timeline_plotly
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -18,7 +16,7 @@ accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
-layer_stacks = [tuple(range(0, 11)), tuple(range(11, 22))] + list((i,) for i in range(22, 49))
+layer_stacks = [tuple(range(0, 12)), tuple(range(12, 22))] + list((i,) for i in range(22, 49))
 ##############################################################################################
 
 ################################PARSING###############################

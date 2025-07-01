@@ -10,8 +10,10 @@ if TYPE_CHECKING:
 
     from stream.cost_model.memory_manager import MemoryManager
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation.computation_node import ComputationNode
+    from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode
     from stream.workload.onnx_workload import ComputationNodeWorkload
+
+TensorHash: TypeAlias = int
 
 
 class SubviewTensor:
@@ -34,7 +36,7 @@ class SubviewTensor:
         """Initialize the Tensor instance.
 
         Args:
-            size (int): the size of the tensor in bits
+            size: the size of the tensor in bits
             origin (ComputationNode): The computation node that consumes/produces this tensor
             layer_operand (str, optional): The layer operand to which this tensor belongs
             loop_dimensions (tuple, optional): The loop dimensions for this tensor
@@ -53,7 +55,7 @@ class SubviewTensor:
         self.layer_operand = layer_operand
         self.memory_operand = self.cn_source.memory_operand_links.layer_to_mem_op(layer_operand)
         self.loop_dimensions = loop_dimensions
-        self.loop_ranges = loop_ranges
+        self.__loop_ranges = loop_ranges
         self.base_priority: None | int = None  # Will be set when we know how many successors this node has (static)
         self.instance_priorities: dict[MemoryInstance, int] = {}
         self.id = (self.cn_source.id, self.cn_source.sub_id, layer_operand)
@@ -109,8 +111,7 @@ class SubviewTensor:
 
         else:
             core = accelerator.get_core(node.chosen_core_allocation)
-            memory_operand = self.memory_operand
-            top_instance = core.get_top_memory_instance(memory_operand)
+            top_instance = core.get_top_memory_instance(self.memory_operand)
             self.instance_priorities[top_instance] = self.base_priority
 
     def get_total_priority(self):
