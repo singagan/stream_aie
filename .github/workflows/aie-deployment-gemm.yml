@@ -41,7 +41,7 @@ jobs:
       - name: Configure Python environment
         run: |
           source .venv/bin/activate
-          source setup_mlir_aie_pythonpath.sh
+          source mlir-aie/utils/env_setup.sh
 
       - name: Run Snakemake
         run: |
