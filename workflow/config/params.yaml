@@ -3,7 +3,7 @@ gemm:
     m: 32
     n: 32
     k: 32
-    stream_hw_identifier: single_aie_tile
+    stream_hw_identifier: single_core
     mlir_aie_dir: /path/to/mlir-aie
     use_stream_output: true
 
