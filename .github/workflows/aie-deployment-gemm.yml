@@ -41,7 +41,7 @@ jobs:
       - name: Run DSE+Codegen+Deployment for Gemm
         run: |
           source .venv/bin/activate
-          source mlir-aie/utils/env_setup.sh
+          source mlir-aie/utils/env_setup.sh /home/asymons/mlir-aie/install /home/asymons/mlir-aie/my_install/llvm-aie
           snakemake -j 1 --forceall
 
       - name: Upload trace output artifact
