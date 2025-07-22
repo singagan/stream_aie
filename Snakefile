@@ -1,8 +1,5 @@
 configfile: "workflow/config/params.yaml"
-
 include: "workflow/rules/gemm.smk"
-
-from workflow.utils.helpers import shape_id, get_suffix
 
 defaults = config["gemm"]["defaults"]
 shapes = config["gemm"]["shapes"]
