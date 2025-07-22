@@ -43,7 +43,6 @@ jobs:
           source .venv/bin/activate
           source setup_mlir_aie_path.sh
           source setup_mlir_aie_pythonpath.sh
-          pip show llvm-aie
           snakemake -j 1 --forceall --keep-going
 
       - name: Report GEMM shape results
