@@ -1,5 +1,6 @@
 import argparse
 import logging as _logging
+import os
 import re
 
 from stream.api import optimize_allocation_co
@@ -18,7 +19,7 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
-    layer_stacks = [(0,)] 
+    layer_stacks = [(0,)]
     ##############################################################################################
 
     ################################PARSING###############################
@@ -31,6 +32,8 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
 
     ################################LOGGING###############################
     log_path = f"outputs/{experiment_id}/stream.log"
+    # Ensure the output directory exists
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     # Get root logger and remove any existing handlers
     logger = _logging.getLogger()
     logger.setLevel(_logging_level)  # or use _logging_level if you define one
