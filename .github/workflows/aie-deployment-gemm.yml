@@ -76,14 +76,7 @@ jobs:
       - name: Upload output artifact
         uses: actions/upload-artifact@v4
         with:
-          name: trace-efficiency-${{ github.run_id }}
+          name: outputs -${{ github.run_id }}
           path: outputs/*
           retention-days: 30
 
-      - name: Upload trace logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trace-logs-${{ github.run_id }}
-          path: logs/
-          retention-days: 30
