@@ -4,11 +4,11 @@ import os
 rule run_stream_aie_to_generate_mlir_output:
     output:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/output.mlir"
-    log:
-        "logs/gemm_{stream_hw_id}_{M}_{K}_{N}.log"
+    # log:
+    #     "logs/gemm_{stream_hw_id}_{M}_{K}_{N}.log"
     shell:
         """
-        python3 main_aie_codegen_gemm.py --M {wildcards.M} --K {wildcards.K} --N {wildcards.N}
+        python3 main_aie_codegen_gemm.py --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} | tee {log}
         """
 
 # Rule 2: Canonicalize and copy the MLIR into mlir-aie build dir
@@ -33,14 +33,16 @@ rule run_trace:
         rules.copy_stream_mlir_output_to_mlir_aie.output,
     output:
         "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/trace_mm_{M}_{K}_{N}.json"
-    # log:
-    #     "logs/gemm_{stream_hw_id}_{M}_{K}_{N}.log"
+    log:
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/run_trace.log"
     shell:
         """
-        set +u && \
-        source mlir-aie/utils/env_setup.sh && \
-        cd mlir-aie/programming_examples/basic/matrix_multiplication_stream/{wildcards.stream_hw_id} && \
-        make trace M={wildcards.M} K={wildcards.K} N={wildcards.N} \
+        (
+            set +u && \
+            source mlir-aie/utils/env_setup.sh && \
+            cd mlir-aie/programming_examples/basic/matrix_multiplication_stream/{wildcards.stream_hw_id} && \
+            make trace M={wildcards.M} K={wildcards.K} N={wildcards.N} \
+        ) > {log} 2>&1
         """
 
 # Rule 4: Post-process the trace

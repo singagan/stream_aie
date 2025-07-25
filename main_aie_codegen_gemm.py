@@ -7,7 +7,6 @@ from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_c
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
@@ -19,7 +18,7 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
-    layer_stacks = [(0,)]
+    layer_stacks = [(0,)] 
     ##############################################################################################
 
     ################################PARSING###############################
@@ -28,6 +27,21 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]
     experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
+    ######################################################################
+
+    ################################LOGGING###############################
+    log_path = f"outputs/{experiment_id}/stream.log"
+    # Get root logger and remove any existing handlers
+    logger = _logging.getLogger()
+    logger.setLevel(_logging_level)  # or use _logging_level if you define one
+    # Remove all existing handlers (e.g., ones added by Snakemake or libraries)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    # Create a file handler explicitly
+    file_handler = _logging.FileHandler(log_path)
+    file_handler.setFormatter(_logging.Formatter(_logging_format))
+    logger.addHandler(file_handler)
+    logger.info(f"Running AIE code generation for Gemm with M={M}, N={N}, K={K}")
     ######################################################################
 
     ################################PLOTS################################
