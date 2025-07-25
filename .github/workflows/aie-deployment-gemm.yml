@@ -73,11 +73,11 @@ jobs:
             exit 1
           fi
 
-      - name: Upload trace output artifact
+      - name: Upload output artifact
         uses: actions/upload-artifact@v4
         with:
           name: trace-efficiency-${{ github.run_id }}
-          path: outputs/*/trace_efficiency_mm.json
+          path: outputs/*
           retention-days: 30
 
       - name: Upload trace logs
