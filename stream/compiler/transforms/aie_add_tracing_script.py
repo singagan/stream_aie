@@ -1,3 +1,4 @@
+from collections import defaultdict
 import aie.utils.trace as trace_utils
 from aie.dialects.aie import AIEDevice, device, tile
 from aie.extras.context import mlir_mod_ctx
@@ -22,118 +23,129 @@ class AIEAddTracingScript(ModulePass):
 
         # 1: Get packet flow
         # find shim tile and compute tile:
-        shim_tile = None
+        shim_tiles: dict[int, TileOp] = {}
         # compute_tile2 = None
-        compute_tiles: dict[tuple[int, int], TileOp] = {}
+        compute_tiles: dict[int, dict[int, TileOp]] = {}
         for tile_op in op.walk():
             if isinstance(tile_op, TileOp):
                 match tile_idx := (tile_op.col.value.data, tile_op.row.value.data):
                     case (0, 0):
-                        shim_tile = tile_op
+                        shim_tiles[0] = tile_op
+                    case (1, 0):
+                        shim_tiles[1] = tile_op
+                    case (2, 0):
+                        shim_tiles[2] = tile_op
+                    case (3, 0):
+                        shim_tiles[3] = tile_op
                     case (0, 1):
                         pass
                     case default:
-                        compute_tiles[tile_idx] = tile_op
-        assert shim_tile is not None
+                        if tile_idx[1] not in compute_tiles:
+                            compute_tiles[tile_idx[1]] = {}
+                        compute_tiles[tile_idx[1]][tile_idx[0]] = tile_op
 
-        with mlir_mod_ctx() as aie_ctx:
+        assert len(shim_tiles) == len(compute_tiles)
 
-            @device(AIEDevice.npu2)
-            def device_body():
-                shim_tile_aie = tile(0, 0)
-                tiles_to_trace = []
-                for tile_idx, compute_tile in compute_tiles.items():
-                    tile_aie = tile(*tile_idx)
-                    tiles_to_trace.append(tile_aie)
-                trace_utils.configure_packet_tracing_flow(tiles_to_trace, shim_tile_aie)
+        for col in range(len(shim_tiles)):
+            with mlir_mod_ctx() as aie_ctx:
 
-        packet_flow_str = aie_ctx.module.body.operations[0].get_asm(print_generic_op_form=True)
+                @device(AIEDevice.npu2)
+                def device_body():
+                    shim_tile_aie = tile(col, 0)
+                    tiles_to_trace = []
+                    for row, compute_tile in compute_tiles[col + 2].items():
+                        tile_aie = tile(col, row)
+                        tiles_to_trace.append(tile_aie)
+                    trace_utils.configure_packet_tracing_flow(tiles_to_trace, shim_tile_aie)
 
-        # modify to fit into our own IR:
-        parser = Parser(Context(allow_unregistered=True), packet_flow_str)
-        module = parser.parse_module()
+            packet_flow_str = aie_ctx.module.body.operations[0].get_asm(print_generic_op_form=True)
 
-        packet_flow_ops: list[Operation] = [
-            op for op in module.body.block.first_op.regions[0].block.ops if op.op_name.data == "aie.packet_flow"
-        ]
-        for packet_flow_op, compute_tile in zip(packet_flow_ops, compute_tiles.values(), strict=True):
-            packet_flow_op.detach()
-            packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile.result
-            packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
-        # for op in module.body.block.first_op.regions[0].block.ops:
-        #     if op.op_name.data in ("aie.tile", "aie.end"):
-        #         continue
-        #     op.detach()
-        #     op.regions[0].block.first_op.operands[0] = compute_tile2.result
-        #     op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
-        #     packet_flow_ops.append(op)
-        # packet_flow_op = module.body.block.first_op.regions[0].block.last_op.prev_op  # pyright: ignore
-        # assert isinstance(packet_flow_op, Operation)
-        # packet_flow_op.detach()
-        # packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile2.result
-        # packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
+            # modify to fit into our own IR:
+            parser = Parser(Context(allow_unregistered=True), packet_flow_str)
+            module = parser.parse_module()
 
-        # insert into device body:
-        for device_op in op.walk():
-            if isinstance(device_op, DeviceOp):
-                rewriter.insert_op(packet_flow_ops, InsertPoint.at_end(device_op.region.block))
+            packet_flow_ops: list[Operation] = [
+                op for op in module.body.block.first_op.regions[0].block.ops if op.op_name.data == "aie.packet_flow"
+            ]
+            for packet_flow_op, compute_tile in zip(packet_flow_ops, compute_tiles[col + 2].values(), strict=True):
+                packet_flow_op.detach()
+                packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile.result
+                packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tiles[col].result
+            # for op in module.body.block.first_op.regions[0].block.ops:
+            #     if op.op_name.data in ("aie.tile", "aie.end"):
+            #         continue
+            #     op.detach()
+            #     op.regions[0].block.first_op.operands[0] = compute_tile2.result
+            #     op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
+            #     packet_flow_ops.append(op)
+            # packet_flow_op = module.body.block.first_op.regions[0].block.last_op.prev_op  # pyright: ignore
+            # assert isinstance(packet_flow_op, Operation)
+            # packet_flow_op.detach()
+            # packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile2.result
+            # packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
+
+            # insert into device body:
+            for device_op in op.walk():
+                if isinstance(device_op, DeviceOp):
+                    rewriter.insert_op(packet_flow_ops, InsertPoint.at_end(device_op.region.block))
 
         # 2: Runtime sequence thingies
         #
-        with mlir_mod_ctx() as aie_ctx:
+        for col in range(len(shim_tiles)):
+            with mlir_mod_ctx() as aie_ctx:
 
-            @device(AIEDevice.npu2)
-            def device_body():
-                shim_tile_aie = tile(0, 0)
-                tiles_to_trace = []
-                for tile_idx, compute_tile in compute_tiles.items():
-                    tile_aie = tile(*tile_idx)
-                    tiles_to_trace.append(tile_aie)
+                @device(AIEDevice.npu2)
+                def device_body():
+                    shim_tile_aie = tile(col, 0)
+                    tiles_to_trace = []
+                    for row, compute_tile in compute_tiles[col + 2].items():
+                        tile_aie = tile(col, row)
+                        tiles_to_trace.append(tile_aie)
 
-                trace_utils.configure_packet_tracing_aie2(
-                    tiles_to_trace=tiles_to_trace,
-                    shim=shim_tile_aie,
-                    trace_size=self.trace_size,
-                    coretile_events=[
-                        # captures input A (PORT_RUNNING_0, at port number 1, master for inputs)
-                        trace_utils.PortEvent(
-                            trace_utils.CoreEvent.PORT_RUNNING_0,
-                            port_number=1,
-                            master=True,
-                        ),
-                        # captures input B (PORT_RUNNING_1, at port number 2, master for inputs)
-                        trace_utils.PortEvent(
-                            trace_utils.CoreEvent.PORT_RUNNING_1,
-                            port_number=2,
-                            master=True,
-                        ),
-                        # captures output C (PORT_RUNNING_2, at port number 1, slave for outputs)
-                        trace_utils.PortEvent(
-                            trace_utils.CoreEvent.PORT_RUNNING_2,
-                            port_number=1,
-                            master=False,
-                        ),
-                        trace_utils.CoreEvent.INSTR_EVENT_0,
-                        trace_utils.CoreEvent.INSTR_EVENT_1,
-                        trace_utils.CoreEvent.MEMORY_STALL,
-                        trace_utils.CoreEvent.LOCK_STALL,
-                        trace_utils.CoreEvent.INSTR_VECTOR,
-                    ],
-                )
+                    trace_utils.configure_packet_tracing_aie2(
+                        tiles_to_trace=tiles_to_trace,
+                        shim=shim_tile_aie,
+                        trace_size=self.trace_size,
+                        coretile_events=[
+                            # captures input A (PORT_RUNNING_0, at port number 1, master for inputs)
+                            trace_utils.PortEvent(
+                                trace_utils.CoreEvent.PORT_RUNNING_0,
+                                port_number=1,
+                                master=True,
+                            ),
+                            # captures input B (PORT_RUNNING_1, at port number 2, master for inputs)
+                            trace_utils.PortEvent(
+                                trace_utils.CoreEvent.PORT_RUNNING_1,
+                                port_number=2,
+                                master=True,
+                            ),
+                            # captures output C (PORT_RUNNING_2, at port number 1, slave for outputs)
+                            trace_utils.PortEvent(
+                                trace_utils.CoreEvent.PORT_RUNNING_2,
+                                port_number=1,
+                                master=False,
+                            ),
+                            trace_utils.CoreEvent.INSTR_EVENT_0,
+                            trace_utils.CoreEvent.INSTR_EVENT_1,
+                            trace_utils.CoreEvent.MEMORY_STALL,
+                            trace_utils.CoreEvent.LOCK_STALL,
+                            trace_utils.CoreEvent.INSTR_VECTOR,
+                        ],
+                    )
 
-        runtime_str = aie_ctx.module.body.operations[0].get_asm(print_generic_op_form=True)
+            runtime_str = aie_ctx.module.body.operations[0].get_asm(print_generic_op_form=True)
 
-        parser = Parser(Context(allow_unregistered=True), runtime_str)
-        module = parser.parse_module()
+            parser = Parser(Context(allow_unregistered=True), runtime_str)
+            module = parser.parse_module()
 
-        # Find runtime sequence:
-        for runtime_sequence in op.walk():
-            if isinstance(runtime_sequence, RuntimeSequenceOp):
-                # Insert all ops at start
-                insert_point = InsertPoint.at_start(runtime_sequence.body.block)
-                for operation in module.body.block.first_op.regions[0].block.ops:
-                    if operation.op_name.data in ("aie.tile", "aie.end"):
-                        continue
-                    operation.detach()
-                    rewriter.insert_op(operation, insert_point)
-                    insert_point = InsertPoint.after(operation)
+            # Find runtime sequence:
+            for runtime_sequence in op.walk():
+                if isinstance(runtime_sequence, RuntimeSequenceOp):
+                    # Insert all ops at start
+                    insert_point = InsertPoint.at_start(runtime_sequence.body.block)
+                    for operation in module.body.block.first_op.regions[0].block.ops:
+                        if operation.op_name.data in ("aie.tile", "aie.end"):
+                            continue
+                        operation.detach()
+                        rewriter.insert_op(operation, insert_point)
+                        insert_point = InsertPoint.after(operation)

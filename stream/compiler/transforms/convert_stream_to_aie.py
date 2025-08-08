@@ -1629,6 +1629,10 @@ class ConvertStreamToAIEPass(ModulePass):
         rewriter.insert_op(runtime_sequence, InsertPoint.at_end(device_op.region.block))
 
         tile_op_manager = TileOpManager(device_op)
+        tile_op_manager.insert_or_update(0, 0)
+        tile_op_manager.insert_or_update(1, 0)
+        tile_op_manager.insert_or_update(2, 0)
+        tile_op_manager.insert_or_update(3, 0)
         object_fifo_manager = ObjectFifoManager(tile_op_manager, runtime_sequence, device_op)
 
         # Order all transfers based on first use
